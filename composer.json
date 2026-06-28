@@ -1,0 +1,43 @@
+{
+    "name": "streams-sro/gaston",
+    "description": "PHP client for the Gaston API (transcription, translation and sentence search).",
+    "type": "library",
+    "keywords": ["gaston", "transcription", "translation", "speech-to-text", "api-client"],
+    "homepage": "https://gaston.live",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Streams s.r.o.",
+            "email": "contact@streams.guru"
+        }
+    ],
+    "support": {
+        "docs": "https://www.gaston.live/en/api",
+        "source": "https://github.com/streams-sro/gaston-php",
+        "issues": "https://github.com/streams-sro/gaston-php/issues"
+    },
+    "require": {
+        "php": ">=7.0",
+        "ext-curl": "*",
+        "ext-json": "*"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^9 || ^10 || ^11"
+    },
+    "autoload": {
+        "psr-4": {
+            "StreamsSro\\Gaston\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "StreamsSro\\Gaston\\Tests\\": "tests/"
+        }
+    },
+    "config": {
+        "sort-packages": true
+    },
+    "scripts": {
+        "test": "phpunit"
+    }
+}
