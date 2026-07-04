@@ -3,6 +3,14 @@
 All notable changes to this project are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] - 2026-07-04
+
+### Added
+- `search()` accepts an optional `$mediaId` parameter to restrict full-text
+  search to a single media.
+- `ExternalServiceException`, thrown on HTTP 502 when an upstream dependency
+  (e.g. fetching/downloading a video URL) fails.
+
 ## [0.4.0] - 2026-06-28
 
 First release of the PHP client, ported from the Python client. The version is
@@ -26,4 +34,5 @@ aligned with the Python `gaston` package.
 - Runs on PHP 7.0+ with only the `curl` and `json` extensions; no third-party
   runtime dependencies.
 
+[0.5.0]: https://github.com/streams-sro/gaston-php/releases/tag/v0.5.0
 [0.4.0]: https://github.com/streams-sro/gaston-php/releases/tag/v0.4.0

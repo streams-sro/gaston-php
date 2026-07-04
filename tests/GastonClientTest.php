@@ -5,6 +5,7 @@ namespace StreamsSro\Gaston\Tests;
 use PHPUnit\Framework\TestCase;
 use StreamsSro\Gaston\Exception\AuthenticationException;
 use StreamsSro\Gaston\Exception\BadRequestException;
+use StreamsSro\Gaston\Exception\ExternalServiceException;
 use StreamsSro\Gaston\Exception\GastonApiException;
 use StreamsSro\Gaston\Exception\GastonException;
 use StreamsSro\Gaston\Exception\RateLimitException;
@@ -174,6 +175,19 @@ class GastonClientTest extends TestCase
         $this->assertStringContainsString('dir_ids=2', $url);
     }
 
+    public function testSearchByMediaId()
+    {
+        $this->http->queueJson(array(
+            'results' => array(),
+            'total' => array('value' => 0, 'relation' => 'eq'),
+        ));
+
+        $this->client->search('hello world', 0, 10, null, null, 'me...');
+
+        $url = $this->http->lastCall()['url'];
+        $this->assertStringContainsString('media_id=me...', $url);
+    }
+
     public function testSearchTooShort()
     {
         $this->expectException(BadRequestException::class);
@@ -193,6 +207,13 @@ class GastonClientTest extends TestCase
         $this->expectException(RateLimitException::class);
         $fh = fopen('php://memory', 'r+');
         $this->client->transcribe($fh);
+    }
+
+    public function testExternalServiceErrorFromStatus()
+    {
+        $this->http->queueJson(array('error' => 'Failed to fetch URL info'), 502);
+        $this->expectException(ExternalServiceException::class);
+        $this->client->transcribeUrl('http://x');
     }
 
     public function testErrorKeyOn200Response()

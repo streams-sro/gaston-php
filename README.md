@@ -122,7 +122,7 @@ $client->deleteDirectory($folder->id);
 
 ## Search
 
-`$client->search($query, $from = 0, $max = 50, $dirIds = null, $lang = null)`
+`$client->search($query, $from = 0, $max = 50, $dirIds = null, $lang = null, $mediaId = null)`
 runs a full-text search over every sentence in your transcribed media.
 
 ### Query syntax
@@ -157,6 +157,9 @@ $client->search('budget', 0, 50, [42, 43, 7]);
 
 // Restrict to one language, and page through results
 $page2 = $client->search('budget', 50, 50, null, 'en');
+
+// Search within a single media
+$client->search('budget', 0, 50, null, null, 'me...');
 ```
 
 ### Reading results
@@ -198,13 +201,14 @@ try {
 }
 ```
 
-| Exception                  | Trigger                                  |
-|----------------------------|------------------------------------------|
-| `AuthenticationException`  | HTTP 403, invalid token / disabled user  |
-| `BadRequestException`      | HTTP 400, invalid parameters             |
-| `NotFoundException`        | HTTP 404, resource not found             |
-| `RateLimitException`       | HTTP 429, usage limit exceeded           |
-| `GastonApiException`       | any other API error                      |
+| Exception                  | Trigger                                        |
+|----------------------------|-------------------------------------------------|
+| `AuthenticationException`  | HTTP 403, invalid token / disabled user          |
+| `BadRequestException`      | HTTP 400, invalid parameters                     |
+| `NotFoundException`        | HTTP 404, resource not found                     |
+| `RateLimitException`       | HTTP 429, usage limit exceeded                   |
+| `ExternalServiceException` | HTTP 502, an external dependency failed upstream |
+| `GastonApiException`       | any other API error                              |
 
 Every API exception carries `->getStatusCode()`, `->getMessage()`,
 `->getDetails()` and the raw `->getPayload()`. `GastonException` is the base

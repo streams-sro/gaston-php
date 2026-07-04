@@ -4,6 +4,7 @@ namespace StreamsSro\Gaston;
 
 use StreamsSro\Gaston\Exception\AuthenticationException;
 use StreamsSro\Gaston\Exception\BadRequestException;
+use StreamsSro\Gaston\Exception\ExternalServiceException;
 use StreamsSro\Gaston\Exception\GastonApiException;
 use StreamsSro\Gaston\Exception\GastonException;
 use StreamsSro\Gaston\Exception\NotFoundException;
@@ -71,6 +72,7 @@ class GastonClient
         403 => AuthenticationException::class,
         404 => NotFoundException::class,
         429 => RateLimitException::class,
+        502 => ExternalServiceException::class,
     );
 
     /**
@@ -184,6 +186,7 @@ class GastonClient
      * @return TranscribeResult
      *
      * @throws BadRequestException if $lang is not a supported language.
+     * @throws NotFoundException   if $dirId does not refer to an existing directory.
      * @throws GastonException     if $file cannot be read.
      */
     public function transcribe($file, $lang = null, $dirId = null, $title = null, float $timeout = -1.0): TranscribeResult
@@ -206,7 +209,10 @@ class GastonClient
      * @param int|null    $dirId Directory to place the media into.
      * @return TranscribeResult
      *
-     * @throws BadRequestException if $lang is not a supported language.
+     * @throws BadRequestException      if $lang is not a supported language, or the URL is
+     *                                  unsupported/private.
+     * @throws ExternalServiceException if fetching the URL or downloading the video fails
+     *                                  upstream (e.g. YouTube retries exhausted).
      */
     public function transcribeUrl(string $url, $lang = null, $dirId = null): TranscribeResult
     {
@@ -339,11 +345,12 @@ class GastonClient
      * @param int           $max    Maximum number of results to return.
      * @param int[]|string[]|null $dirIds Restrict the search to one or more directory ids.
      * @param string|null   $lang   Restrict the search to a single language.
+     * @param int|string|null $mediaId Restrict the search to a single media.
      * @return SearchResults
      *
      * @throws BadRequestException if the query is shorter than 3 characters.
      */
-    public function search(string $query, int $from = 0, int $max = 50, $dirIds = null, $lang = null): SearchResults
+    public function search(string $query, int $from = 0, int $max = 50, $dirIds = null, $lang = null, $mediaId = null): SearchResults
     {
         if (strlen($query) < 3) {
             throw new BadRequestException('Query must be at least 3 characters.');
@@ -360,6 +367,9 @@ class GastonClient
                 $ids[] = (string) $id;
             }
             $params['dir_ids'] = $ids;
+        }
+        if ($mediaId !== null) {
+            $params['media_id'] = (string) $mediaId;
         }
         return SearchResults::fromArray($this->request('GET', '/sentence/search', $params));
     }
