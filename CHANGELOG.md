@@ -3,6 +3,19 @@
 All notable changes to this project are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.6.0] - 2026-07-07
+
+### Added
+- `alignTranslation()` for word-level alignment of a translation against
+  source timestamps, returning `AlignTranslationResult`. Progress is
+  surfaced via the new `Media::$translationAlignment` field.
+- `Media::$directoryId`, populated when the API includes `directory_id`
+  (currently only on `listMedia()`/`directoryTree()` results, not
+  `getMedia()`).
+
+### Changed
+- `moveMedia()` now returns a `Media` object, matching `getMedia()`'s shape.
+
 ## [0.5.0] - 2026-07-04
 
 ### Added
@@ -34,5 +47,6 @@ aligned with the Python `gaston` package.
 - Runs on PHP 7.0+ with only the `curl` and `json` extensions; no third-party
   runtime dependencies.
 
+[0.6.0]: https://github.com/streams-sro/gaston-php/releases/tag/v0.6.0
 [0.5.0]: https://github.com/streams-sro/gaston-php/releases/tag/v0.5.0
 [0.4.0]: https://github.com/streams-sro/gaston-php/releases/tag/v0.4.0

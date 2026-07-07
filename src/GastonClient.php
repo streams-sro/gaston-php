@@ -13,6 +13,7 @@ use StreamsSro\Gaston\Http\CurlHttpClient;
 use StreamsSro\Gaston\Http\HttpClientInterface;
 use StreamsSro\Gaston\Http\Response;
 use StreamsSro\Gaston\Http\UploadFile;
+use StreamsSro\Gaston\Model\AlignTranslationResult;
 use StreamsSro\Gaston\Model\Directory;
 use StreamsSro\Gaston\Model\Media;
 use StreamsSro\Gaston\Model\MediaList;
@@ -165,11 +166,13 @@ class GastonClient
      *
      * @param string   $mediaId
      * @param int|null $dirId
-     * @return array
+     * @return Media
      */
-    public function moveMedia(string $mediaId, $dirId = null): array
+    public function moveMedia(string $mediaId, $dirId = null): Media
     {
-        return $this->request('PATCH', '/media', array('media_id' => $mediaId, 'dir_id' => $dirId));
+        return Media::fromArray(
+            $this->request('PATCH', '/media', array('media_id' => $mediaId, 'dir_id' => $dirId))
+        );
     }
 
     /**
@@ -250,6 +253,40 @@ class GastonClient
             array('media_id' => $mediaId, 'target_lang' => $targetLang)
         );
         return TranslateResult::fromArray($data);
+    }
+
+    /**
+     * Queue word-level alignment of a translation against source timestamps.
+     *
+     * Produces per-word start/end times for $targetLang (for karaoke-style
+     * playback), based on the source-language WhisperX timestamps.
+     *
+     * @param string    $mediaId    The public media id.
+     * @param string    $targetLang Target language short code; must already be fully
+     *                              translated (available_languages[$targetLang] == 100) or the
+     *                              API returns a 400.
+     * @param bool|null $clamp      Force non-decreasing timestamps across a sentence. If
+     *                              omitted, the worker uses its own default.
+     * @return AlignTranslationResult
+     *
+     * @throws BadRequestException if $targetLang is not a supported translation target.
+     */
+    public function alignTranslation(string $mediaId, string $targetLang, $clamp = null): AlignTranslationResult
+    {
+        $targetLang = strtolower(trim($targetLang));
+        if (!Languages::isTranslationTarget($targetLang)) {
+            throw new BadRequestException(
+                "Language '" . $targetLang . "' is not a supported translation target.",
+                null,
+                Languages::translationLanguages()
+            );
+        }
+        $data = $this->request(
+            'PATCH',
+            '/media/align-translation',
+            array('media_id' => $mediaId, 'target_lang' => $targetLang, 'clamp' => $clamp)
+        );
+        return AlignTranslationResult::fromArray($data);
     }
 
     /**

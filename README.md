@@ -42,6 +42,10 @@ $client->transcribeUrl('https://youtu.be/dQw4w9WgXcQ', 'en');
 // Translate an existing transcription
 $client->translate($result->id, 'de');
 
+// Word-level alignment of a translation against source timestamps
+// (requires a completed translation in that language)
+$client->alignTranslation($result->id, 'de', true);
+
 // Speaker diarization (requires a completed translation in that language)
 $client->diarize($result->id, 'de', 2);
 
@@ -115,7 +119,7 @@ $client->transcribe($fh, 'en');
 ```php
 $folder = $client->createDirectory('Podcasts');
 $client->updateDirectory($folder->id, 'Podcast archive');
-$client->moveMedia('me...', $folder->id);
+$moved = $client->moveMedia('me...', $folder->id); // returns the updated Media
 $tree = $client->directoryTree();
 $client->deleteDirectory($folder->id);
 ```

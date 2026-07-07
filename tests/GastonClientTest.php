@@ -105,6 +105,27 @@ class GastonClientTest extends TestCase
         $this->assertSame('hello there', $media->sentences[0]->getText());
     }
 
+    public function testMoveMediaReturnsMedia()
+    {
+        $this->http->queueJson(array(
+            'id' => 'm1',
+            'title' => 'T',
+            'state' => 'transcribed',
+            'file' => 'https://cdn.example.com/m1.mp4',
+            'available_languages' => array('en' => 100),
+            'sentences' => array(),
+            'diarized_sentences' => array(),
+            'directory_id' => 5,
+        ));
+
+        $media = $this->client->moveMedia('m1', 5);
+
+        $this->assertSame('m1', $media->id);
+        $this->assertSame('https://cdn.example.com/m1.mp4', $media->file);
+        $this->assertSame(5, $media->directoryId);
+        $this->assertStringContainsString('dir_id=5', $this->http->lastCall()['url']);
+    }
+
     public function testTranscribeFromStream()
     {
         $this->http->queueJson(array('id' => 'me123', 'state' => 'uploaded'));
@@ -150,6 +171,43 @@ class GastonClientTest extends TestCase
 
         $this->assertSame(0, $result->availableLanguages['de']);
         $this->assertStringContainsString('target_lang=de', $this->http->lastCall()['url']);
+    }
+
+    public function testAlignTranslationRejectsBadLang()
+    {
+        $this->expectException(BadRequestException::class);
+        $this->client->alignTranslation('m1', 'zz');
+    }
+
+    public function testAlignTranslation()
+    {
+        $this->http->queueJson(array(
+            'id' => 'm1',
+            'target_lang' => 'de',
+            'alignment_progress' => 0,
+        ));
+
+        $result = $this->client->alignTranslation('m1', 'DE', false);
+
+        $this->assertSame('m1', $result->id);
+        $this->assertSame('de', $result->targetLang);
+        $this->assertSame(0, $result->alignmentProgress);
+        $url = $this->http->lastCall()['url'];
+        $this->assertStringContainsString('target_lang=de', $url);
+        $this->assertStringContainsString('clamp=false', $url);
+    }
+
+    public function testAlignTranslationOmitsClampWhenUnset()
+    {
+        $this->http->queueJson(array(
+            'id' => 'm1',
+            'target_lang' => 'de',
+            'alignment_progress' => 0,
+        ));
+
+        $this->client->alignTranslation('m1', 'de');
+
+        $this->assertStringNotContainsString('clamp', $this->http->lastCall()['url']);
     }
 
     public function testSearchBuildsParams()

@@ -58,6 +58,12 @@ class Media
     /** @var array */
     public $diarizedSentences;
 
+    /** @var array */
+    public $translationAlignment;
+
+    /** @var int|null */
+    public $directoryId;
+
     /** @var array The original decoded payload. */
     public $raw;
 
@@ -92,6 +98,8 @@ class Media
         }
         $self->sentences = $sentences;
         $self->diarizedSentences = !empty($data['diarized_sentences']) ? $data['diarized_sentences'] : array();
+        $self->translationAlignment = !empty($data['translation_alignment']) ? $data['translation_alignment'] : array();
+        $self->directoryId = isset($data['directory_id']) ? $data['directory_id'] : null;
         $self->raw = $data;
         return $self;
     }
