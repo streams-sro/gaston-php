@@ -3,6 +3,24 @@
 All notable changes to this project are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.7.0] - 2026-10-04
+
+### Added
+- `exportMedia()` to export a media item as `text`, `text_timestamps`, `csv`,
+  `srt` or `audio`, returning a `MediaExport` (content, server-suggested
+  filename and content type, plus `save()`). `srt` exports support
+  `$maxWordsPerBlock` and `$includeSpeakers`.
+- `exportMediaToFile()` to stream an export straight to disk (recommended
+  for audio). It writes to a temporary file first, so a failed export leaves
+  nothing behind.
+- `Languages::EXPORT_FORMATS` listing the supported export formats.
+- `Response::$headers` / `Response::getHeader()`; `CurlHttpClient` now
+  captures response headers.
+- `StreamingHttpClientInterface`, an optional transport extension for
+  streaming a response body into a stream. `CurlHttpClient` implements it;
+  custom transports that only implement `HttpClientInterface` still work
+  (exports are then buffered in memory before being written).
+
 ## [0.6.0] - 2026-07-07
 
 ### Added
@@ -47,6 +65,7 @@ aligned with the Python `gaston` package.
 - Runs on PHP 7.0+ with only the `curl` and `json` extensions; no third-party
   runtime dependencies.
 
+[0.7.0]: https://github.com/streams-sro/gaston-php/releases/tag/v0.7.0
 [0.6.0]: https://github.com/streams-sro/gaston-php/releases/tag/v0.6.0
 [0.5.0]: https://github.com/streams-sro/gaston-php/releases/tag/v0.5.0
 [0.4.0]: https://github.com/streams-sro/gaston-php/releases/tag/v0.4.0

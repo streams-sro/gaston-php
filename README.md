@@ -55,6 +55,9 @@ foreach ($media->sentences as $sentence) {
     echo $sentence->id, ' ', $sentence->getText(), ' ', $sentence->speaker, PHP_EOL;
 }
 
+// Export a transcript (text, text_timestamps, csv, srt or audio)
+$client->exportMediaToFile($result->id, 'subtitles.srt', 'srt', 'de');
+
 // Full text search across the whole library
 $results = $client->search('climate change', 0, 20);
 echo 'total matches: ', $results->total, PHP_EOL;
@@ -69,7 +72,7 @@ The constructor signature is:
 new GastonClient(
     string $token = null,          // falls back to GASTON_API_TOKEN
     float  $timeout = 30.0,         // ordinary requests, seconds (0 = no limit)
-    float  $uploadTimeout = 600.0,  // file-upload endpoint, seconds
+    float  $uploadTimeout = 600.0,  // file uploads and audio exports, seconds
     float  $connectTimeout = 10.0,  // connection timeout, seconds
     HttpClientInterface $httpClient = null
 );
@@ -95,9 +98,9 @@ $client = new GastonClient();
 
 ### Timeouts
 
-Ordinary requests use a 30s timeout. The file upload in `transcribe()` can take
-minutes for large files, so it uses a separate, more generous `$uploadTimeout`
-(default 600s). All timeouts are in seconds; pass `0` to wait indefinitely.
+Ordinary requests use a 30s timeout. The file upload in `transcribe()` and
+audio exports can take minutes for large files, so they use a separate, more
+generous `$uploadTimeout` (default 600s). All timeouts are in seconds; pass `0` to wait indefinitely.
 
 ```php
 // Customise the defaults for all calls
@@ -113,6 +116,44 @@ $client->transcribe('huge-recording.mp4', null, null, null, 0.0);
 $fh = fopen('interview.mp4', 'rb');
 $client->transcribe($fh, 'en');
 ```
+
+## Exporting
+
+`exportMedia()` returns the file in memory as a `MediaExport` (`->content`,
+`->filename`, `->contentType`, plus `->save($path)`), while
+`exportMediaToFile()` streams it straight to disk. Use `exportMediaToFile()` for
+audio.
+
+```php
+// Transcript as plain text (format: text, text_timestamps, csv, srt, audio)
+$export = $client->exportMedia('me...', 'text', 'en');
+echo $export->filename, PHP_EOL; // filename suggested by the server, e.g. "My interview.txt"
+echo $export->content;
+
+// Subtitles split into blocks of at most 8 words, prefixed with speaker names
+// (speaker names require diarization)
+$client->exportMediaToFile('me...', 'interview.srt', 'srt', null, 8, true);
+
+// Audio (a finished dubbed track for $lang if one exists, otherwise the
+// original). Passing an existing directory saves it under the server-suggested
+// filename.
+$path = $client->exportMediaToFile('me...', '.', 'audio', 'de');
+```
+
+The full signatures are:
+
+```php
+$client->exportMedia($mediaId, $format, $lang = null, $maxWordsPerBlock = 0, $includeSpeakers = false, $timeout = -1.0);
+$client->exportMediaToFile($mediaId, $path, $format, $lang = null, $maxWordsPerBlock = 0, $includeSpeakers = false, $timeout = -1.0);
+```
+
+`$lang` defaults to the media's original language. `$maxWordsPerBlock` and
+`$includeSpeakers` only apply to `srt`. Exporting audio, or any media longer
+than 30 minutes, requires a paid plan; otherwise an `AuthenticationException`
+(HTTP 403) is thrown. Audio exports use the client's `$uploadTimeout` by
+default. `exportMediaToFile()` downloads to a temporary file next to the target
+first, so a failed export never leaves a partial file behind. The supported
+formats are listed in `Languages::EXPORT_FORMATS`.
 
 ## Directories
 
@@ -227,6 +268,7 @@ Languages::SUPPORTED;                  // transcription source languages
 Languages::translationLanguages();     // available translation targets
 Languages::isSupported('en');          // bool
 Languages::isTranslationTarget('de');  // bool
+Languages::EXPORT_FORMATS;             // formats accepted by exportMedia()
 ```
 
 ## Development

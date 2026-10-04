@@ -41,6 +41,16 @@ final class Languages
         'fa' => 'pes_Arab', 'ur' => 'urd_Arab', 'te' => 'tel_Telu', 'ru' => 'rus_Cyrl',
     );
 
+    /**
+     * Formats accepted by {@see GastonClient::exportMedia()}. "text_timestamps"
+     * is plain text with a timestamp before each sentence; "audio" returns the
+     * media file itself (or a finished dubbed track for the language) and
+     * requires a paid plan.
+     *
+     * @var string[]
+     */
+    const EXPORT_FORMATS = array('text', 'text_timestamps', 'csv', 'srt', 'audio');
+
     /** Possible values of Media::$state. */
     const STATE_PENDING = 'pending';
     const STATE_UPLOADED = 'uploaded';

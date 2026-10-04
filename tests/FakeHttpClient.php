@@ -23,11 +23,13 @@ class FakeHttpClient implements HttpClientInterface
      *
      * @param array $json
      * @param int   $status
+     * @param array $headers Extra response headers (Content-Type is set to JSON).
      * @return self
      */
-    public function queueJson(array $json, $status = 200)
+    public function queueJson(array $json, $status = 200, array $headers = array())
     {
-        $this->responses[] = new Response($status, json_encode($json));
+        $headers['Content-Type'] = 'application/json';
+        $this->responses[] = new Response($status, json_encode($json), $headers);
         return $this;
     }
 
@@ -36,11 +38,12 @@ class FakeHttpClient implements HttpClientInterface
      *
      * @param string $body
      * @param int    $status
+     * @param array  $headers Response headers.
      * @return self
      */
-    public function queueRaw($body, $status = 200)
+    public function queueRaw($body, $status = 200, array $headers = array())
     {
-        $this->responses[] = new Response($status, $body);
+        $this->responses[] = new Response($status, $body, $headers);
         return $this;
     }
 

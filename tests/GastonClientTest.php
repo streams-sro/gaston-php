@@ -8,8 +8,10 @@ use StreamsSro\Gaston\Exception\BadRequestException;
 use StreamsSro\Gaston\Exception\ExternalServiceException;
 use StreamsSro\Gaston\Exception\GastonApiException;
 use StreamsSro\Gaston\Exception\GastonException;
+use StreamsSro\Gaston\Exception\NotFoundException;
 use StreamsSro\Gaston\Exception\RateLimitException;
 use StreamsSro\Gaston\GastonClient;
+use StreamsSro\Gaston\Model\MediaExport;
 
 /**
  * Tests for GastonClient using a fake HTTP transport.
@@ -321,5 +323,194 @@ class GastonClientTest extends TestCase
                 putenv(GastonClient::BASE_URL_OVERRIDE_ENV . '=' . $previousOverride);
             }
         }
+    }
+
+    public function testExportMediaText()
+    {
+        $this->http->queueRaw("Hello world.\n", 200, array(
+            'Content-Type' => 'text/plain; charset=utf-8',
+            'Content-Disposition' => "attachment; filename=\"zaznam\"; filename*=UTF-8''Z%C3%A1znam.txt",
+        ));
+
+        $export = $this->client->exportMedia('m1', 'text', 'sk');
+
+        $this->assertSame("Hello world.\n", $export->content);
+        $this->assertSame('Záznam.txt', $export->filename);
+        $this->assertStringStartsWith('text/plain', $export->contentType);
+        $call = $this->http->lastCall();
+        $this->assertSame('GET', $call['method']);
+        $this->assertStringContainsString('/media/export?', $call['url']);
+        $this->assertStringContainsString('media_id=m1', $call['url']);
+        $this->assertStringContainsString('format=text', $call['url']);
+        $this->assertStringContainsString('lang=sk', $call['url']);
+        // srt-only defaults must not be sent
+        $this->assertStringNotContainsString('max_words_per_block', $call['url']);
+        $this->assertStringNotContainsString('include_speakers', $call['url']);
+        $this->assertSame(30.0, $call['timeout']);
+    }
+
+    public function testExportMediaJsonLikeTranscriptIsNotParsed()
+    {
+        // A transcript that happens to be valid JSON must still come back as text.
+        $this->http->queueRaw('123', 200, array('Content-Type' => 'text/plain; charset=utf-8'));
+        $this->assertSame('123', $this->client->exportMedia('m1', 'text')->content);
+    }
+
+    public function testExportMediaSrtOptions()
+    {
+        $this->http->queueRaw("1\n", 200, array('Content-Type' => 'application/x-subrip; charset=utf-8'));
+        $this->client->exportMedia('m1', 'srt', null, 8, true);
+        $url = $this->http->lastCall()['url'];
+        $this->assertStringContainsString('max_words_per_block=8', $url);
+        $this->assertStringContainsString('include_speakers=true', $url);
+    }
+
+    public function testExportMediaAudioUsesUploadTimeout()
+    {
+        $this->http->queueRaw("\x00audio", 200, array('Content-Type' => 'audio/mpeg'));
+        $this->client->exportMedia('m1', 'audio');
+        $this->assertSame(600.0, $this->http->lastCall()['timeout']);
+    }
+
+    public function testExportMediaError()
+    {
+        $this->http->queueJson(array('error' => "Media 'm1' not found."), 404);
+        $this->expectException(NotFoundException::class);
+        $this->client->exportMedia('m1', 'csv');
+    }
+
+    public function testExportMediaPaidPlanError()
+    {
+        $this->http->queueJson(array('error' => 'Exporting audio requires a paid plan.'), 403);
+        $this->expectException(AuthenticationException::class);
+        $this->expectExceptionMessage('paid plan');
+        $this->client->exportMedia('m1', 'audio');
+    }
+
+    public function testExportMediaUnexpectedJsonOn200()
+    {
+        $this->http->queueJson(array('result' => 'ok'));
+        $this->expectException(GastonApiException::class);
+        $this->client->exportMedia('m1', 'text');
+    }
+
+    public function testExportMediaRejectsBadFormat()
+    {
+        $this->expectException(BadRequestException::class);
+        $this->client->exportMedia('m1', 'pdf');
+    }
+
+    public function testExportMediaRejectsNegativeBlockSize()
+    {
+        $this->expectException(BadRequestException::class);
+        $this->client->exportMedia('m1', 'srt', null, -1);
+    }
+
+    public function testMediaExportSave()
+    {
+        $dir = $this->makeTempDir();
+        $export = new MediaExport('a,b', 'out.csv', 'text/csv');
+        $path = $export->save($dir);
+        $this->assertSame($dir . DIRECTORY_SEPARATOR . 'out.csv', $path);
+        $this->assertSame('a,b', file_get_contents($path));
+    }
+
+    public function testExportMediaToFileUsesServerFilename()
+    {
+        $dir = $this->makeTempDir();
+        $http = new FakeStreamingHttpClient();
+        $http->queueRaw("\x00audio-bytes", 200, array(
+            'Content-Type' => 'audio/mpeg',
+            'Content-Disposition' => 'attachment; filename="../../evil.mp3"',
+        ));
+        $client = new GastonClient('gapi-test', 30.0, 600.0, 10.0, $http);
+
+        $path = $client->exportMediaToFile('m1', $dir, 'audio');
+
+        $this->assertSame(1, $http->streamCalls);
+        $this->assertSame($dir . DIRECTORY_SEPARATOR . 'evil.mp3', $path);
+        $this->assertSame("\x00audio-bytes", file_get_contents($path));
+        $this->assertSame(array('evil.mp3'), $this->listDir($dir));
+    }
+
+    public function testExportMediaToFileExplicitPath()
+    {
+        $dir = $this->makeTempDir();
+        $this->http->queueRaw("a,b\n", 200, array('Content-Type' => 'text/csv; charset=utf-8'));
+        $target = $dir . '/out.csv';
+
+        $this->assertSame($target, $this->client->exportMediaToFile('m1', $target, 'csv'));
+        $this->assertSame("a,b\n", file_get_contents($target));
+        $this->assertSame(array('out.csv'), $this->listDir($dir));
+    }
+
+    public function testExportMediaToFileErrorWritesNothing()
+    {
+        $dir = $this->makeTempDir();
+        $http = new FakeStreamingHttpClient();
+        $http->queueJson(array('error' => 'No transcription found.'), 404);
+        $client = new GastonClient('gapi-test', 30.0, 600.0, 10.0, $http);
+
+        try {
+            $client->exportMediaToFile('m1', $dir . '/out.txt', 'text');
+            $this->fail('Expected NotFoundException');
+        } catch (NotFoundException $e) {
+            $this->assertSame(array(), $this->listDir($dir));
+        }
+    }
+
+    public function testExportMediaToFileStreamedJsonErrorWritesNothing()
+    {
+        $dir = $this->makeTempDir();
+        $http = new FakeStreamingHttpClient();
+        $http->queueJson(array('error' => 'Something went wrong.'));
+        $client = new GastonClient('gapi-test', 30.0, 600.0, 10.0, $http);
+
+        try {
+            $client->exportMediaToFile('m1', $dir . '/out.txt', 'text');
+            $this->fail('Expected GastonApiException');
+        } catch (GastonApiException $e) {
+            $this->assertStringContainsString('Something went wrong.', $e->getMessage());
+            $this->assertSame(array(), $this->listDir($dir));
+        }
+    }
+
+    public function testExportMediaToFileWithoutSuggestedFilename()
+    {
+        $dir = $this->makeTempDir();
+        $this->http->queueRaw('text', 200, array('Content-Type' => 'text/plain'));
+
+        try {
+            $this->client->exportMediaToFile('m1', $dir, 'text');
+            $this->fail('Expected GastonException');
+        } catch (GastonException $e) {
+            $this->assertSame(array(), $this->listDir($dir));
+        }
+    }
+
+    /** @var string[] Temporary directories removed in tearDown(). */
+    private $tempDirs = array();
+
+    protected function tearDown(): void
+    {
+        foreach ($this->tempDirs as $dir) {
+            foreach ($this->listDir($dir) as $file) {
+                unlink($dir . '/' . $file);
+            }
+            rmdir($dir);
+        }
+    }
+
+    private function makeTempDir()
+    {
+        $dir = sys_get_temp_dir() . '/gaston-test-' . bin2hex(random_bytes(6));
+        mkdir($dir);
+        $this->tempDirs[] = $dir;
+        return $dir;
+    }
+
+    private function listDir($dir)
+    {
+        return array_values(array_diff(scandir($dir), array('.', '..')));
     }
 }

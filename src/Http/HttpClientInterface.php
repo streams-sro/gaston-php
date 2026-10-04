@@ -21,7 +21,7 @@ interface HttpClientInterface
      * @param UploadFile|null $upload         Optional multipart file part.
      * @param float           $timeout        Total/read timeout in seconds (0 = no limit).
      * @param float           $connectTimeout Connection timeout in seconds (0 = no limit).
-     * @return Response
+     * @return Response Status, body and (where the transport provides them) headers.
      */
     public function send($method, $url, array $headers, $upload = null, $timeout = 0.0, $connectTimeout = 0.0);
 }

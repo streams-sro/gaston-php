@@ -12,10 +12,12 @@ use StreamsSro\Gaston\Exception\RateLimitException;
 use StreamsSro\Gaston\Http\CurlHttpClient;
 use StreamsSro\Gaston\Http\HttpClientInterface;
 use StreamsSro\Gaston\Http\Response;
+use StreamsSro\Gaston\Http\StreamingHttpClientInterface;
 use StreamsSro\Gaston\Http\UploadFile;
 use StreamsSro\Gaston\Model\AlignTranslationResult;
 use StreamsSro\Gaston\Model\Directory;
 use StreamsSro\Gaston\Model\Media;
+use StreamsSro\Gaston\Model\MediaExport;
 use StreamsSro\Gaston\Model\MediaList;
 use StreamsSro\Gaston\Model\SearchResults;
 use StreamsSro\Gaston\Model\TranscribeResult;
@@ -307,6 +309,159 @@ class GastonClient
         return TranscribeResult::fromArray($data);
     }
 
+    /**
+     * Export a media item's transcript (or audio) as a file, in memory.
+     *
+     * For large audio files prefer {@see exportMediaToFile()}, which streams to
+     * disk instead of holding the whole file in memory.
+     *
+     * @param string      $mediaId          The public media id.
+     * @param string      $format           One of {@see Languages::EXPORT_FORMATS}: "text",
+     *                                      "text_timestamps", "csv", "srt" or "audio". Exporting
+     *                                      audio, or any media longer than 30 minutes, requires a
+     *                                      paid plan.
+     * @param string|null $lang             Language of the transcript to export (defaults to the
+     *                                      original). For "audio", a finished dubbed track in this
+     *                                      language is returned if one exists.
+     * @param int         $maxWordsPerBlock "srt" only: split sentences into subtitle blocks of at
+     *                                      most this many words (0 keeps whole sentences).
+     * @param bool        $includeSpeakers  "srt" only: prefix subtitles with speaker names
+     *                                      (requires diarization).
+     * @param float       $timeout          Override the timeout for this call, in seconds. -1 uses
+     *                                      the upload timeout for "audio" and the ordinary timeout
+     *                                      otherwise; 0 waits indefinitely.
+     * @return MediaExport The file content plus the filename and content type sent by the server.
+     *
+     * @throws BadRequestException     if $format is not supported or $maxWordsPerBlock is negative.
+     * @throws AuthenticationException if the export requires a paid plan.
+     * @throws NotFoundException       if the media or its transcript does not exist.
+     */
+    public function exportMedia(
+        string $mediaId,
+        string $format,
+        $lang = null,
+        int $maxWordsPerBlock = 0,
+        bool $includeSpeakers = false,
+        float $timeout = -1.0
+    ): MediaExport {
+        list($url, $effectiveTimeout) = $this->prepareExport(
+            $mediaId, $format, $lang, $maxWordsPerBlock, $includeSpeakers, $timeout
+        );
+        $response = $this->http->send(
+            'GET', $url, $this->authHeaders(), null, $effectiveTimeout, $this->connectTimeout
+        );
+        $this->assertExportSucceeded($response);
+
+        return new MediaExport(
+            $response->body,
+            self::filenameFromDisposition($response->getHeader('Content-Disposition')),
+            $response->getHeader('Content-Type')
+        );
+    }
+
+    /**
+     * Export a media item and stream it straight to $path.
+     *
+     * Takes the same arguments as {@see exportMedia()}. If $path is an existing
+     * directory, the file is written inside it using the filename suggested by
+     * the server. The download goes to a temporary file next to the target
+     * first, so a failed export never leaves a partial or empty file behind.
+     *
+     * @param string      $mediaId
+     * @param string      $path             Target file path, or an existing directory.
+     * @param string      $format
+     * @param string|null $lang
+     * @param int         $maxWordsPerBlock
+     * @param bool        $includeSpeakers
+     * @param float       $timeout
+     * @return string The path the file was written to.
+     *
+     * @throws BadRequestException     if $format is not supported or $maxWordsPerBlock is negative.
+     * @throws AuthenticationException if the export requires a paid plan.
+     * @throws NotFoundException       if the media or its transcript does not exist.
+     * @throws GastonException         if the file cannot be written.
+     */
+    public function exportMediaToFile(
+        string $mediaId,
+        string $path,
+        string $format,
+        $lang = null,
+        int $maxWordsPerBlock = 0,
+        bool $includeSpeakers = false,
+        float $timeout = -1.0
+    ): string {
+        list($url, $effectiveTimeout) = $this->prepareExport(
+            $mediaId, $format, $lang, $maxWordsPerBlock, $includeSpeakers, $timeout
+        );
+
+        $toDirectory = is_dir($path);
+        $dir = $toDirectory ? $path : dirname($path);
+        if (!is_dir($dir) || !is_writable($dir)) {
+            throw new GastonException("Directory '" . $dir . "' does not exist or is not writable.");
+        }
+        $tmp = @tempnam($dir, '.gaston-export-');
+        $sink = $tmp === false ? false : @fopen($tmp, 'wb');
+        if ($sink === false) {
+            if ($tmp !== false) {
+                @unlink($tmp);
+            }
+            throw new GastonException("Failed to create a temporary file in '" . $dir . "'.");
+        }
+
+        try {
+            if ($this->http instanceof StreamingHttpClientInterface) {
+                $response = $this->http->sendToStream(
+                    'GET', $url, $this->authHeaders(), $sink, $effectiveTimeout, $this->connectTimeout
+                );
+            } else {
+                $response = $this->http->send(
+                    'GET', $url, $this->authHeaders(), null, $effectiveTimeout, $this->connectTimeout
+                );
+                if ($response->statusCode >= 200 && $response->statusCode < 300) {
+                    if (fwrite($sink, $response->body) !== strlen($response->body)) {
+                        throw new GastonException("Failed to write export to '" . $tmp . "'.");
+                    }
+                    $response->body = '';
+                }
+            }
+            $closed = fclose($sink);
+            $sink = null;
+            if (!$closed) {
+                throw new GastonException("Failed to write export to '" . $tmp . "'.");
+            }
+
+            if (!$response->isOk() || $this->isJson($response)) {
+                // A 2xx error payload was streamed to disk; read it back to report it.
+                if ($response->body === '') {
+                    $response->body = (string) file_get_contents($tmp);
+                }
+                $this->assertExportSucceeded($response);
+            }
+
+            $target = $path;
+            if ($toDirectory) {
+                $filename = self::filenameFromDisposition($response->getHeader('Content-Disposition'));
+                if ($filename === null) {
+                    throw new GastonException('The server did not suggest a filename; pass a file path.');
+                }
+                $target = rtrim($path, '/\\') . DIRECTORY_SEPARATOR . $filename;
+            }
+            if (!@rename($tmp, $target)) {
+                throw new GastonException("Failed to move export to '" . $target . "'.");
+            }
+        } catch (\Throwable $e) {
+            if ($sink !== null) {
+                fclose($sink);
+            }
+            @unlink($tmp);
+            throw $e;
+        }
+
+        // tempnam() creates the file as 0600; give it the usual permissions.
+        @chmod($target, 0666 & ~umask());
+        return $target;
+    }
+
     // -- directories -----------------------------------------------------
 
     /**
@@ -465,21 +620,133 @@ class GastonClient
      */
     private function request($method, $path, array $params = array(), $upload = null, $timeout = null)
     {
+        $headers = $this->authHeaders();
+        $headers['Accept'] = 'application/json';
+
+        $effectiveTimeout = $timeout === null ? $this->timeout : $timeout;
+        $response = $this->http->send(
+            $method, $this->buildUrl($path, $params), $headers, $upload, $effectiveTimeout, $this->connectTimeout
+        );
+
+        return $this->handleResponse($response);
+    }
+
+    /**
+     * @param string $path
+     * @param array  $params
+     * @return string
+     */
+    private function buildUrl($path, array $params): string
+    {
         $url = $this->baseUrl . $path;
         $query = $this->buildQuery($params);
         if ($query !== '') {
             $url .= '?' . $query;
         }
+        return $url;
+    }
 
-        $headers = array(
-            'token' => $this->token,
-            'Accept' => 'application/json',
+    /**
+     * @return array<string, string>
+     */
+    private function authHeaders(): array
+    {
+        return array('token' => $this->token);
+    }
+
+    /**
+     * Validate export arguments and return the request URL and timeout.
+     *
+     * @return array{0: string, 1: float}
+     *
+     * @throws BadRequestException
+     */
+    private function prepareExport($mediaId, $format, $lang, $maxWordsPerBlock, $includeSpeakers, $timeout): array
+    {
+        if (!in_array($format, Languages::EXPORT_FORMATS, true)) {
+            throw new BadRequestException(
+                "Export format '" . $format . "' is not supported.",
+                null,
+                Languages::EXPORT_FORMATS
+            );
+        }
+        if ($maxWordsPerBlock < 0) {
+            throw new BadRequestException('maxWordsPerBlock cannot be negative.');
+        }
+        if ($timeout < 0) {
+            $timeout = $format === 'audio' ? $this->uploadTimeout : $this->timeout;
+        }
+
+        $url = $this->buildUrl('/media/export', array(
+            'media_id' => $mediaId,
+            'format' => $format,
+            'lang' => $lang,
+            // Leave server defaults implicit.
+            'max_words_per_block' => $maxWordsPerBlock ?: null,
+            'include_speakers' => $includeSpeakers ?: null,
+        ));
+        return array($url, $timeout);
+    }
+
+    /**
+     * Throw for a failed export response.
+     *
+     * Successful exports are never JSON (a transcript might still happen to
+     * parse as JSON, so the body is not sniffed); errors always are.
+     *
+     * @param Response $response
+     *
+     * @throws GastonException
+     */
+    private function assertExportSucceeded(Response $response)
+    {
+        if ($response->isOk() && !$this->isJson($response)) {
+            return;
+        }
+        $this->handleResponse($response);
+        throw new GastonApiException(
+            'Unexpected JSON response to an export request.',
+            $response->statusCode
         );
+    }
 
-        $effectiveTimeout = $timeout === null ? $this->timeout : $timeout;
-        $response = $this->http->send($method, $url, $headers, $upload, $effectiveTimeout, $this->connectTimeout);
+    /**
+     * @param Response $response
+     * @return bool
+     */
+    private function isJson(Response $response): bool
+    {
+        $contentType = $response->getHeader('Content-Type');
+        return $contentType !== null && stripos(ltrim($contentType), 'application/json') === 0;
+    }
 
-        return $this->handleResponse($response);
+    /**
+     * Extract the filename from a Content-Disposition header.
+     *
+     * Prefers the RFC 5987 "filename*" (UTF-8) form over the ASCII fallback.
+     *
+     * @param string|null $header
+     * @return string|null
+     */
+    private static function filenameFromDisposition($header)
+    {
+        if ($header === null || $header === '') {
+            return null;
+        }
+        if (preg_match("/filename\\*\\s*=\\s*[^']*'[^']*'([^;]+)/i", $header, $m)) {
+            $name = rawurldecode(trim($m[1]));
+        } elseif (preg_match('/filename\s*=\s*"([^"]*)"|filename\s*=\s*([^;]+)/i', $header, $m)) {
+            $name = trim(isset($m[2]) ? $m[2] : $m[1]);
+        } else {
+            return null;
+        }
+        // Never let a server-supplied name escape the target directory.
+        $name = str_replace('\\', '/', $name);
+        $slash = strrpos($name, '/');
+        if ($slash !== false) {
+            $name = substr($name, $slash + 1);
+        }
+        return ($name === '' || $name === '.' || $name === '..') ? null : $name;
     }
 
     /**
