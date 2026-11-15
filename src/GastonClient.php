@@ -15,6 +15,7 @@ use StreamsSro\Gaston\Http\Response;
 use StreamsSro\Gaston\Http\StreamingHttpClientInterface;
 use StreamsSro\Gaston\Http\UploadFile;
 use StreamsSro\Gaston\Model\AlignTranslationResult;
+use StreamsSro\Gaston\Model\Digest;
 use StreamsSro\Gaston\Model\Directory;
 use StreamsSro\Gaston\Model\Media;
 use StreamsSro\Gaston\Model\MediaExport;
@@ -462,6 +463,117 @@ class GastonClient
         return $target;
     }
 
+    // -- digest ----------------------------------------------------------
+
+    /**
+     * Add the media behind $url (like {@see transcribeUrl()}) and request an AI
+     * digest of it: a summary and, optionally, the answer to a question.
+     *
+     * The digest is generated once the media is transcribed; poll
+     * {@see getDigest()} or use {@see waitForDigest()}. Requesting the same
+     * digest of the same media again returns the existing one.
+     *
+     * @param string      $url        The media URL (YouTube or web).
+     * @param string|null $lang       Source language hint (see {@see Languages::SUPPORTED}).
+     * @param int|null    $dirId      Directory to place the media into.
+     * @param string      $detail     One of {@see Languages::DIGEST_DETAILS}: "brief" or "detailed".
+     * @param string|null $question   A question to answer from the transcript (at most 2000
+     *                                characters).
+     * @param string|null $answerLang Language of the summary and answer. Validated by the
+     *                                server, whose list differs from Languages::SUPPORTED.
+     * @return Digest Only the ids and states are set; the rest comes from getDigest().
+     *
+     * @throws BadRequestException      if $lang or $detail is not supported, or the server
+     *                                  rejects $answerLang, $question or the URL.
+     * @throws AuthenticationException  if AI features are disabled for the account.
+     * @throws ExternalServiceException if fetching the URL fails upstream.
+     */
+    public function createDigest(
+        string $url,
+        $lang = null,
+        $dirId = null,
+        string $detail = Languages::DIGEST_DETAIL_BRIEF,
+        $question = null,
+        $answerLang = null
+    ): Digest {
+        $this->assertSupportedLanguage($lang);
+        if (!in_array($detail, Languages::DIGEST_DETAILS, true)) {
+            throw new BadRequestException(
+                "Digest detail '" . $detail . "' is not supported.",
+                null,
+                Languages::DIGEST_DETAILS
+            );
+        }
+        $data = $this->request('POST', '/digest', array(
+            'url' => $url,
+            'lang' => $lang,
+            'dir_id' => $dirId,
+            // Leave the server default implicit.
+            'detail' => $detail === Languages::DIGEST_DETAIL_BRIEF ? null : $detail,
+            'question' => $question,
+            'answer_lang' => $answerLang,
+        ));
+        return Digest::fromArray($data);
+    }
+
+    /**
+     * Fetch a digest and its current state.
+     *
+     * A digest that failed is returned (with {@see Digest::isFailed()} true and
+     * {@see Digest::$error} set) rather than thrown, so polling code can tell a
+     * failed digest from a failed request.
+     *
+     * @param string $digestId The digest id returned by {@see createDigest()}.
+     * @return Digest
+     *
+     * @throws AuthenticationException if AI features are disabled for the account.
+     * @throws NotFoundException       if the digest does not exist.
+     */
+    public function getDigest(string $digestId): Digest
+    {
+        return Digest::fromArray(
+            $this->request('GET', '/digest', array('digest_id' => $digestId), null, null, true)
+        );
+    }
+
+    /**
+     * Poll a digest until it is ready or has failed.
+     *
+     * Transcribing a long recording takes minutes, hence the generous default
+     * timeout.
+     *
+     * @param string $digestId
+     * @param float  $timeout  Give up after this many seconds (0 = wait indefinitely).
+     * @param float  $interval Seconds to wait between polls.
+     * @return Digest A finished digest; check {@see Digest::isFailed()}.
+     *
+     * @throws GastonException if the digest is not finished within $timeout.
+     */
+    public function waitForDigest(string $digestId, float $timeout = 900.0, float $interval = 10.0): Digest
+    {
+        $deadline = $timeout > 0 ? microtime(true) + $timeout : null;
+        while (true) {
+            $digest = $this->getDigest($digestId);
+            if ($digest->isFinished()) {
+                return $digest;
+            }
+            $wait = max(0.0, $interval);
+            if ($deadline !== null) {
+                $remaining = $deadline - microtime(true);
+                if ($remaining <= 0) {
+                    throw new GastonException(
+                        "Digest '" . $digestId . "' was not finished within " . $timeout
+                        . ' seconds (last state: ' . ($digest->digestState ?: 'unknown') . ').'
+                    );
+                }
+                $wait = min($wait, $remaining);
+            }
+            if ($wait > 0) {
+                usleep((int) round($wait * 1000000));
+            }
+        }
+    }
+
     // -- directories -----------------------------------------------------
 
     /**
@@ -614,11 +726,12 @@ class GastonClient
      * @param array           $params
      * @param UploadFile|null $upload
      * @param float|null      $timeout Per-call read timeout; null uses the default timeout.
+     * @param bool            $digest  Whether a digest payload is expected (see handleResponse()).
      * @return mixed Decoded JSON (array) or, for non-JSON success responses, the raw body string.
      *
      * @throws GastonException
      */
-    private function request($method, $path, array $params = array(), $upload = null, $timeout = null)
+    private function request($method, $path, array $params = array(), $upload = null, $timeout = null, $digest = false)
     {
         $headers = $this->authHeaders();
         $headers['Accept'] = 'application/json';
@@ -628,7 +741,7 @@ class GastonClient
             $method, $this->buildUrl($path, $params), $headers, $upload, $effectiveTimeout, $this->connectTimeout
         );
 
-        return $this->handleResponse($response);
+        return $this->handleResponse($response, $digest);
     }
 
     /**
@@ -751,11 +864,14 @@ class GastonClient
 
     /**
      * @param Response $response
+     * @param bool     $digest Whether a digest payload is expected. A failed digest is a 2xx
+     *                         response carrying both "digest_id" and "error"; that is the
+     *                         digest's own state, not a failed request.
      * @return mixed
      *
      * @throws GastonException
      */
-    private function handleResponse(Response $response)
+    private function handleResponse(Response $response, $digest = false)
     {
         $body = json_decode($response->body, true);
         $decoded = json_last_error() === JSON_ERROR_NONE;
@@ -773,6 +889,9 @@ class GastonClient
         // The API signals failures both via HTTP status codes and via an
         // "error" key in an otherwise 200 response. Handle both.
         $errorMessage = (is_array($body) && isset($body['error'])) ? $body['error'] : null;
+        if ($digest && $response->isOk() && isset($body['digest_id'])) {
+            $errorMessage = null;
+        }
 
         if (!$response->isOk() || $errorMessage !== null) {
             $exceptionClass = isset(self::$statusExceptions[$response->statusCode])

@@ -61,6 +61,19 @@ final class Languages
     const ORIGIN_YOUTUBE = 'yt';
     const ORIGIN_WEB = 'web';
 
+    /** Possible values of Digest::$digestState. */
+    const DIGEST_STATE_PENDING = 'pending';
+    const DIGEST_STATE_GENERATING = 'generating';
+    const DIGEST_STATE_READY = 'ready';
+    const DIGEST_STATE_ERROR = 'error';
+
+    /** Levels of detail accepted by {@see GastonClient::createDigest()}. */
+    const DIGEST_DETAIL_BRIEF = 'brief';
+    const DIGEST_DETAIL_DETAILED = 'detailed';
+
+    /** @var string[] */
+    const DIGEST_DETAILS = array(self::DIGEST_DETAIL_BRIEF, self::DIGEST_DETAIL_DETAILED);
+
     private function __construct()
     {
     }

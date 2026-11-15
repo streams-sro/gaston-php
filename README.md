@@ -1,7 +1,8 @@
 # Gaston API Client (PHP)
 
 A small, dependency-free PHP client for the **Gaston API**: transcription,
-translation and full-text search of sentences within transcribed recordings.
+translation, AI digests and full-text search of sentences within transcribed
+recordings.
 
 > Requires a Gaston account and an API token (see [Configuration](#configuration)).
 
@@ -57,6 +58,9 @@ foreach ($media->sentences as $sentence) {
 
 // Export a transcript (text, text_timestamps, csv, srt or audio)
 $client->exportMediaToFile($result->id, 'subtitles.srt', 'srt', 'de');
+
+// AI digest (summary) of a URL; see "Digest" below
+$digest = $client->waitForDigest($client->createDigest('https://youtu.be/dQw4w9WgXcQ')->digestId);
 
 // Full text search across the whole library
 $results = $client->search('climate change', 0, 20);
@@ -154,6 +158,71 @@ than 30 minutes, requires a paid plan; otherwise an `AuthenticationException`
 default. `exportMediaToFile()` downloads to a temporary file next to the target
 first, so a failed export never leaves a partial file behind. The supported
 formats are listed in `Languages::EXPORT_FORMATS`.
+
+## Digest
+
+A digest is an AI-generated summary of a recording, optionally with the answer
+to a question about it. `createDigest()` adds the media behind a URL (like
+`transcribeUrl()`) and requests the digest; it is generated once the media is
+transcribed, so poll `getDigest()` or let `waitForDigest()` do it.
+
+```php
+$digest = $client->createDigest(
+    'https://youtu.be/dQw4w9WgXcQ',
+    null,                       // source language hint (auto-detected if null)
+    null,                       // directory id
+    'detailed',                 // "brief" (default) or "detailed"
+    'What does the singer promise?',
+    'de'                        // language of the summary and answer
+);
+echo $digest->digestId, ' ', $digest->digestState, PHP_EOL; // e.g. "dg... pending"
+
+// Polls every 10s for up to 15 minutes; throws a GastonException on timeout
+$digest = $client->waitForDigest($digest->digestId);
+
+if ($digest->isFailed()) {
+    echo 'Digest failed: ', $digest->error, PHP_EOL;
+} else {
+    echo $digest->summary->text, PHP_EOL;
+    foreach ($digest->summary->citations as $citation) {
+        // marker as used in the text, e.g. "[S12-S15]", with its position in seconds
+        echo $citation->marker, ' ', $citation->start, '-', $citation->end, PHP_EOL;
+    }
+    if ($digest->answer !== null) {
+        echo $digest->answer->text !== null ? $digest->answer->text : 'No answer: ' . $digest->answer->error, PHP_EOL;
+    }
+}
+```
+
+The full signatures are:
+
+```php
+$client->createDigest($url, $lang = null, $dirId = null, $detail = 'brief', $question = null, $answerLang = null);
+$client->getDigest($digestId);
+$client->waitForDigest($digestId, $timeout = 900.0, $interval = 10.0);
+```
+
+`Digest::$digestState` is one of `pending`, `generating`, `ready` or `error`
+(`Languages::DIGEST_STATE_*`), with the helpers `isReady()`, `isFailed()` and
+`isFinished()`. `Digest::$id` and `Digest::$state` describe the underlying
+media, and `$transcriptionProgress` is reported while it is still being
+transcribed. Things to know:
+
+- `createDigest()` returns only the ids and states; `$summary`, `$answer`,
+  `$language` and the rest are filled in by `getDigest()`.
+- A failed digest is **returned**, not thrown: `isFailed()` is true and
+  `$error` says why. Exceptions are reserved for failed requests (an unknown
+  digest id throws `NotFoundException`; an account with AI features disabled
+  throws `AuthenticationException`).
+- If the summary succeeded but the question could not be answered, the digest
+  is still `ready`: `$answer->text` is null and `$answer->error` is set.
+- Requesting the same digest of the same media again returns the existing one.
+- `$answerLang` is validated by the server, whose list differs from
+  `Languages::SUPPORTED`; an unsupported code throws a `BadRequestException`
+  with the accepted codes in `->getDetails()`. Questions are limited to 2000
+  characters.
+- Transcribing a long recording takes minutes, so keep the `waitForDigest()`
+  timeout generous (pass `0` to wait indefinitely).
 
 ## Directories
 
@@ -269,6 +338,7 @@ Languages::translationLanguages();     // available translation targets
 Languages::isSupported('en');          // bool
 Languages::isTranslationTarget('de');  // bool
 Languages::EXPORT_FORMATS;             // formats accepted by exportMedia()
+Languages::DIGEST_DETAILS;             // detail levels accepted by createDigest()
 ```
 
 ## Development

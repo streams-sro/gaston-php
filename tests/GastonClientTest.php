@@ -488,6 +488,275 @@ class GastonClientTest extends TestCase
         }
     }
 
+    public function testCreateDigest()
+    {
+        $this->http->queueJson(array(
+            'id' => 'me1',
+            'state' => 'pending',
+            'digest_id' => 'dg1',
+            'digest_state' => 'pending',
+        ));
+
+        $digest = $this->client->createDigest(
+            'https://youtu.be/x', 'en', 5, 'detailed', 'Who is speaking?', 'ga'
+        );
+
+        $this->assertSame('me1', $digest->id);
+        $this->assertSame('pending', $digest->state);
+        $this->assertSame('dg1', $digest->digestId);
+        $this->assertSame('pending', $digest->digestState);
+        $this->assertNull($digest->detail);
+        $this->assertNull($digest->question);
+        $this->assertNull($digest->language);
+        $this->assertNull($digest->transcriptionProgress);
+        $this->assertNull($digest->summary);
+        $this->assertNull($digest->answer);
+        $this->assertNull($digest->error);
+        $this->assertFalse($digest->isFinished());
+
+        $call = $this->http->lastCall();
+        $this->assertSame('POST', $call['method']);
+        $this->assertSame('/digest', parse_url($call['url'], PHP_URL_PATH));
+        parse_str(parse_url($call['url'], PHP_URL_QUERY), $query);
+        $this->assertSame(array(
+            'url' => 'https://youtu.be/x',
+            'lang' => 'en',
+            'dir_id' => '5',
+            'detail' => 'detailed',
+            'question' => 'Who is speaking?',
+            // Not in Languages::SUPPORTED; the server validates answer_lang.
+            'answer_lang' => 'ga',
+        ), $query);
+    }
+
+    public function testCreateDigestOmitsDefaults()
+    {
+        $this->http->queueJson(array('id' => 'me1', 'digest_id' => 'dg1'));
+        $this->client->createDigest('https://youtu.be/x');
+
+        parse_str(parse_url($this->http->lastCall()['url'], PHP_URL_QUERY), $query);
+        $this->assertSame(array('url' => 'https://youtu.be/x'), $query);
+    }
+
+    public function testCreateDigestRejectsBadLangAndDetail()
+    {
+        try {
+            $this->client->createDigest('https://youtu.be/x', 'xx');
+            $this->fail('Expected a BadRequestException.');
+        } catch (BadRequestException $e) {
+            $this->assertStringContainsString("'xx'", $e->getMessage());
+        }
+        try {
+            $this->client->createDigest('https://youtu.be/x', null, null, 'huge');
+            $this->fail('Expected a BadRequestException.');
+        } catch (BadRequestException $e) {
+            $this->assertSame(array('brief', 'detailed'), $e->getDetails());
+        }
+        $this->assertSame(array(), $this->http->calls);
+    }
+
+    public function testCreateDigestUnsupportedAnswerLang()
+    {
+        $this->http->queueJson(array(
+            'error' => 'This answer language is not supported.',
+            'supported_languages' => array('en', 'ga'),
+        ), 400);
+        try {
+            $this->client->createDigest('https://youtu.be/x', null, null, 'brief', null, 'yue');
+            $this->fail('Expected a BadRequestException.');
+        } catch (BadRequestException $e) {
+            $this->assertSame(array('en', 'ga'), $e->getDetails());
+        }
+    }
+
+    public function testCreateDigestErrorKeyOn200Throws()
+    {
+        $this->http->queueJson(array('error' => "This URL isn't supported or may be private."), 200);
+        $this->expectException(GastonApiException::class);
+        $this->client->createDigest('http://x');
+    }
+
+    public function testGetDigestPending()
+    {
+        $this->http->queueJson(array(
+            'id' => 'me1',
+            'state' => 'uploaded',
+            'digest_id' => 'dg1',
+            'digest_state' => 'pending',
+            'detail' => 'brief',
+            'question' => null,
+            'custom_email' => null,
+            'transcription_progress' => 40,
+        ));
+
+        $digest = $this->client->getDigest('dg1');
+
+        $this->assertSame('uploaded', $digest->state);
+        $this->assertSame('pending', $digest->digestState);
+        $this->assertSame('brief', $digest->detail);
+        $this->assertSame(40, $digest->transcriptionProgress);
+        $this->assertNull($digest->summary);
+        $this->assertFalse($digest->isReady());
+        $this->assertFalse($digest->isFailed());
+        $this->assertFalse($digest->isFinished());
+
+        $call = $this->http->lastCall();
+        $this->assertSame('GET', $call['method']);
+        $this->assertSame('/digest', parse_url($call['url'], PHP_URL_PATH));
+        $this->assertSame('digest_id=dg1', parse_url($call['url'], PHP_URL_QUERY));
+        $this->assertSame('gapi-test', $call['headers']['token']);
+    }
+
+    public function testGetDigestReadyWithoutAnswer()
+    {
+        $this->http->queueJson(array(
+            'id' => 'me1',
+            'state' => 'transcribed',
+            'digest_id' => 'dg1',
+            'digest_state' => 'ready',
+            'detail' => 'detailed',
+            'question' => null,
+            'language' => 'en',
+            'summary' => array(
+                'text' => 'It is about bees [S1-S2].',
+                'citations' => array(array(
+                    'marker' => '[S1-S2]',
+                    'title' => 'Bees',
+                    'sentence_ids' => array(1, 2),
+                    'start' => 0.5,
+                    'end' => 7.25,
+                )),
+            ),
+        ));
+
+        $digest = $this->client->getDigest('dg1');
+
+        $this->assertTrue($digest->isReady());
+        $this->assertTrue($digest->isFinished());
+        $this->assertFalse($digest->isFailed());
+        $this->assertSame('en', $digest->language);
+        $this->assertSame('It is about bees [S1-S2].', $digest->summary->text);
+        $this->assertNull($digest->summary->error);
+        $this->assertCount(1, $digest->summary->citations);
+        $citation = $digest->summary->citations[0];
+        $this->assertSame('[S1-S2]', $citation->marker);
+        $this->assertSame('Bees', $citation->title);
+        $this->assertSame(array(1, 2), $citation->sentenceIds);
+        $this->assertSame(0.5, $citation->start);
+        $this->assertSame(7.25, $citation->end);
+        $this->assertNull($digest->answer);
+        $this->assertSame('ready', $digest->raw['digest_state']);
+    }
+
+    public function testGetDigestReadyWithAnswer()
+    {
+        $this->http->queueJson(array(
+            'digest_id' => 'dg1',
+            'digest_state' => 'ready',
+            'question' => 'Who?',
+            'language' => 'en',
+            'summary' => array('text' => 'Summary.', 'citations' => array()),
+            'answer' => array(
+                'text' => 'Alice [S3].',
+                'citations' => array(array(
+                    'marker' => '[S3]', 'title' => null, 'sentence_ids' => array(3), 'start' => null, 'end' => null,
+                )),
+            ),
+        ));
+
+        $digest = $this->client->getDigest('dg1');
+
+        $this->assertSame('Who?', $digest->question);
+        $this->assertSame(array(), $digest->summary->citations);
+        $this->assertSame('Alice [S3].', $digest->answer->text);
+        $this->assertNull($digest->answer->error);
+        $this->assertSame(array(3), $digest->answer->citations[0]->sentenceIds);
+        $this->assertNull($digest->answer->citations[0]->start);
+    }
+
+    public function testGetDigestReadyWithFailedAnswer()
+    {
+        $this->http->queueJson(array(
+            'digest_id' => 'dg1',
+            'digest_state' => 'ready',
+            'question' => 'Who?',
+            'language' => 'en',
+            'summary' => array('text' => 'Summary.', 'citations' => array()),
+            'answer' => array('text' => null, 'citations' => array(), 'error' => 'model unavailable'),
+        ));
+
+        $digest = $this->client->getDigest('dg1');
+
+        $this->assertTrue($digest->isReady());
+        $this->assertFalse($digest->isFailed());
+        $this->assertSame('Summary.', $digest->summary->text);
+        $this->assertNull($digest->answer->text);
+        $this->assertSame('model unavailable', $digest->answer->error);
+        $this->assertNull($digest->error);
+    }
+
+    public function testGetDigestErrorOn200ReturnsDigest()
+    {
+        $this->http->queueJson(array(
+            'id' => 'me1',
+            'state' => 'error',
+            'digest_id' => 'dg1',
+            'digest_state' => 'error',
+            'detail' => 'brief',
+            'error' => 'media processing failed',
+        ), 200);
+
+        $digest = $this->client->getDigest('dg1');
+
+        $this->assertTrue($digest->isFailed());
+        $this->assertTrue($digest->isFinished());
+        $this->assertFalse($digest->isReady());
+        $this->assertSame('media processing failed', $digest->error);
+        $this->assertNull($digest->summary);
+    }
+
+    public function testGetDigestAiDisabled()
+    {
+        $this->http->queueJson(array('error' => 'AI features are disabled for this account.'), 403);
+        $this->expectException(AuthenticationException::class);
+        $this->client->getDigest('dg1');
+    }
+
+    public function testGetDigestNotFound()
+    {
+        $this->http->queueJson(array('error' => "Digest 'dg1' not found."), 404);
+        $this->expectException(NotFoundException::class);
+        $this->client->getDigest('dg1');
+    }
+
+    public function testWaitForDigestPollsUntilFinished()
+    {
+        $this->http
+            ->queueJson(array('digest_id' => 'dg1', 'digest_state' => 'pending'))
+            ->queueJson(array('digest_id' => 'dg1', 'digest_state' => 'generating'))
+            ->queueJson(array('digest_id' => 'dg1', 'digest_state' => 'error', 'error' => 'boom'));
+
+        $digest = $this->client->waitForDigest('dg1', 5.0, 0.0);
+
+        $this->assertTrue($digest->isFailed());
+        $this->assertSame('boom', $digest->error);
+        $this->assertCount(3, $this->http->calls);
+    }
+
+    public function testWaitForDigestTimesOut()
+    {
+        for ($i = 0; $i < 3; $i++) {
+            $this->http->queueJson(array('digest_id' => 'dg1', 'digest_state' => 'generating'));
+        }
+        try {
+            $this->client->waitForDigest('dg1', 0.05, 0.03);
+            $this->fail('Expected a GastonException.');
+        } catch (GastonException $e) {
+            $this->assertNotInstanceOf(GastonApiException::class, $e);
+            $this->assertStringContainsString('generating', $e->getMessage());
+        }
+    }
+
     /** @var string[] Temporary directories removed in tearDown(). */
     private $tempDirs = array();
 
